@@ -151,11 +151,10 @@ _daily_paper_zsh_fetch_keyword() {
 _daily_paper_zsh_display() {
   emulate -L zsh
   local data="$1"
-  # Weekday first, then year-month-day (ISO-style, locale-independent).
-  #   en_US:  Sun 2026-08-23
-  #   CJK:    日 2026-08-23
-  local today_human
-  today_human="$(date '+%a %Y-%m-%d')"
+  # Weekday first (Simplified Chinese, locale-independent), then ISO date.
+  #   星期一 2026-08-23 ... 星期日 2026-08-23
+  local -a cn_wdays=(星期一 星期二 星期三 星期四 星期五 星期六 星期日)
+  local today_human="${cn_wdays[$(date +%u)]} $(date '+%Y-%m-%d')"
 
   local -a lines
   # Trim one trailing newline if present so `(@f)` gives a consistent count
