@@ -1,0 +1,9 @@
+# Editor / OS noise
+.DS_Store
+*.swp
+*.swo
+*~
+
+# Test artifacts
+/tmp/
+.cache/
