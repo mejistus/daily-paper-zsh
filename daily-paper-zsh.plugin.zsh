@@ -9,24 +9,29 @@
 #
 # Configuration (set in ~/.zshrc BEFORE the plugins=(...) line):
 #
-#   DAILY_PAPER_KEYWORDS     comma-separated keywords
-#                            default: "diffusion,aigc detection,deepfake"
-#   DAILY_PAPER_MAX_RESULTS  papers per keyword       default: 5
-#   DAILY_PAPER_TIMEOUT      curl timeout in seconds  default: 20
-#   DAILY_PAPER_CACHE_DIR    override cache dir       default: ~/.cache/daily-paper-zsh
+#   DAILY_PAPER_KEYWORDS        comma-separated keywords
+#                               default: "diffusion,aigc detection,deepfake"
+#   DAILY_PAPER_MAX_RESULTS     papers per keyword       default: 5
+#   DAILY_PAPER_TIMEOUT         curl timeout in seconds  default: 20
+#   DAILY_PAPER_CACHE_DIR       override cache dir       default: ~/.cache/daily-paper-zsh
+#   DAILY_PAPER_DOWNLOAD_DIR    where 'download' saves PDFs
+#                               default: $HOME/Downloads
+#   DAILY_PAPER_DOWNLOAD_TIMEOUT curl timeout per PDF    default: 60
 #
-#   DAILY_PAPER_DISABLE      set to 1 to disable the plugin
-#   DAILY_PAPER_FORCE        set to 1 to refetch even if already shown today
-#   DAILY_PAPER_DEBUG        set to 1 for verbose diagnostic output to stderr
-#   DAILY_PAPER_OPEN         set to 1 to open the first paper in your browser
-#   DAILY_PAPER_NO_COLOR     set to 1 to disable ANSI colors
+#   DAILY_PAPER_DISABLE         set to 1 to disable the plugin
+#   DAILY_PAPER_FORCE           set to 1 to refetch even if already shown today
+#   DAILY_PAPER_DEBUG           set to 1 for verbose diagnostic output to stderr
+#   DAILY_PAPER_OPEN            set to 1 to open the first paper in your browser
+#   DAILY_PAPER_NO_COLOR        set to 1 to disable ANSI colors
 #
 # Manual commands:
 #
-#   daily-paper              refetch today's digest
-#   daily-paper-keyword <kw> [more...]   one-off keyword search (prints inline)
-#   daily-paper-cache        show the cache directory and its contents
-#   daily-paper-clear        delete today's cache + state (next shell re-fetches)
+#   daily-paper                        refetch today's digest
+#   daily-paper-keyword <kw> [more...] one-off keyword search (prints inline)
+#   daily-paper-cache                  show the cache directory and its contents
+#   daily-paper-clear                  delete today's cache + state (next shell re-fetches)
+#   daily-paper download <id> [...]    download arXiv PDFs to $DAILY_PAPER_DOWNLOAD_DIR
+#                                      (accepts bare ids, versioned, prefixed, or URLs)
 
 # ---- default values (only assigned when unset/empty) -----------------------
 : ${DAILY_PAPER_KEYWORDS:="diffusion,aigc detection,deepfake"}
@@ -38,6 +43,8 @@
 : ${DAILY_PAPER_DEBUG:=}
 : ${DAILY_PAPER_OPEN:=}
 : ${DAILY_PAPER_NO_COLOR:=}
+: ${DAILY_PAPER_DOWNLOAD_DIR:="$HOME/Downloads"}
+: ${DAILY_PAPER_DOWNLOAD_TIMEOUT:=60}
 
 # ============================================================================
 # Helpers
@@ -227,6 +234,52 @@ _daily_paper_zsh_maybe_open() {
   fi
 }
 
+# Normalize an arxiv id from any of these input forms:
+#   2401.12345                       -> 2401.12345
+#   2401.12345v2                     -> 2401.12345v2
+#   arXiv:2401.12345                 -> 2401.12345
+#   https://arxiv.org/abs/2401.12345 -> 2401.12345
+#   https://arxiv.org/pdf/2401.12345.pdf -> 2401.12345
+#   https://arxiv.org/abs/cs.LG/0612001  -> cs.LG/0612001
+# Prints the normalized id on stdout; returns non-zero if input is unusable.
+_daily_paper_zsh_extract_arxiv_id() {
+  emulate -L zsh
+  local raw="$1"
+
+  raw="${raw#"${raw%%[![:space:]]*}"}"   # trim leading whitespace
+  raw="${raw%"${raw##*[![:space:]]}"}"   # trim trailing whitespace
+
+  case "$raw" in                         # strip "arXiv:" prefix (case-insensitive)
+    [aA][rR][xX][iI][vV]:*) raw="${raw#*:}" ;;
+  esac
+  raw="${raw#:}"
+
+  case "$raw" in                         # URL? grab the bit after /abs/ or /pdf/
+    https://*|http://*)
+      case "$raw" in
+        */abs/*) raw="${raw##*/abs/}" ;;
+        */pdf/*) raw="${raw##*/pdf/}" ;;
+        *)       raw="${raw##*/}"    ;;
+      esac
+      raw="${raw%%\?*}"                  # drop query string
+      raw="${raw%%#*}"                   # drop fragment
+      case "$raw" in
+        *.pdf) raw="${raw%.pdf}" ;;
+        *.PDF) raw="${raw%.PDF}" ;;
+      esac
+      ;;
+  esac
+
+  raw="${raw%/}"                         # trim trailing slashes
+
+  if [[ "$raw" =~ '^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)?$' ]] \
+     && [[ "$raw" == *.* || "$raw" == */* ]]; then
+    print -r -- "$raw"
+    return 0
+  fi
+  return 1
+}
+
 # Main: fetch + cache + display (once per day, controlled by should_show).
 _daily_paper_zsh_run() {
   emulate -L zsh
@@ -283,8 +336,24 @@ _daily_paper_zsh_run() {
 # ============================================================================
 
 # Re-run the digest right now (refetch even if shown today).
+# Also dispatches subcommands when given arguments:
+#   daily-paper download <arxiv-id> [...]   (see daily-paper-download)
 daily-paper() {
   emulate -L zsh
+  if (( $# >= 1 )); then
+    case "$1" in
+      download)
+        shift
+        daily-paper-download "$@"
+        return $?
+        ;;
+      *)
+        print -ru2 -- "daily-paper-zsh: unknown subcommand '$1'"
+        print -ru2 -- "  try: daily-paper download <arxiv-id> [...]"
+        return 1
+        ;;
+    esac
+  fi
   DAILY_PAPER_FORCE=1 _daily_paper_zsh_run
 }
 
@@ -331,6 +400,87 @@ daily-paper-clear() {
   command rm -f "$DAILY_PAPER_CACHE_DIR/${today}.txt" \
                  "$DAILY_PAPER_CACHE_DIR/last_shown"
   print -r -- "daily-paper-zsh: cleared today's cache for $today"
+}
+
+# Download one or more arXiv PDFs to $DAILY_PAPER_DOWNLOAD_DIR
+# (default: $HOME/Downloads). Each argument may be a bare id (2401.12345),
+# versioned (2401.12345v2), prefixed (arXiv:2401.12345), or a full abs/pdf URL.
+#
+# Files are written as <id>.pdf. If <id>.pdf already exists it is skipped
+# (delete it to force a re-download). Downloads land in <id>.pdf.partial
+# first; on success they are renamed atomically.
+daily-paper-download() {
+  emulate -L zsh
+  if (( $# < 1 )); then
+    print -ru2 -- "usage: daily-paper download <arxiv-id> [...]"
+    print -ru2 -- "  example: daily-paper download 2401.12345 2401.67890v2"
+    print -ru2 -- "  target dir: \${DAILY_PAPER_DOWNLOAD_DIR:-\$HOME/Downloads}"
+    return 1
+  fi
+
+  if ! (( ${+commands[curl]} )); then
+    print -ru2 -- "daily-paper-zsh: curl not found"
+    return 1
+  fi
+
+  local target_dir="${DAILY_PAPER_DOWNLOAD_DIR:-$HOME/Downloads}"
+  if ! command mkdir -p "$target_dir" 2>/dev/null; then
+    print -ru2 -- "daily-paper-zsh: cannot create download directory '$target_dir'"
+    return 1
+  fi
+
+  local ok=0 skip=0 fail=0
+  local arg id pdf_url outfile tmpfile magic size
+
+  for arg in "$@"; do
+    if ! id="$(_daily_paper_zsh_extract_arxiv_id "$arg")"; then
+      print -ru2 -- "  ✗  cannot parse arxiv id from '$arg'"
+      (( fail++ ))
+      continue
+    fi
+
+    pdf_url="https://arxiv.org/pdf/${id}"
+    outfile="${target_dir}/${id}.pdf"
+    tmpfile="${outfile}.partial"
+
+    if [[ -e "$outfile" ]]; then
+      print -r -- "  ↩  $id already exists at $outfile (skipping; delete to re-download)"
+      (( skip++ ))
+      continue
+    fi
+
+    # Clean up any stale .partial from a previous failed attempt.
+    command rm -f "$tmpfile"
+
+    print -r -- "  ↓  $id ..."
+    if ! command curl -fsSL -m "$DAILY_PAPER_DOWNLOAD_TIMEOUT" \
+                       -o "$tmpfile" "$pdf_url" 2>/dev/null; then
+      command rm -f "$tmpfile"
+      print -ru2 -- "  ✗  $id download failed"
+      (( fail++ ))
+      continue
+    fi
+
+    # Sanity check: real PDFs start with the %PDF- magic bytes.
+    # arxiv returns an HTML "not found" page (with HTTP 200) for bad ids,
+    # so a content check is required.
+    magic="$(command head -c 5 "$tmpfile" 2>/dev/null)"
+    if [[ "$magic" != "%PDF-" ]]; then
+      command rm -f "$tmpfile"
+      print -ru2 -- "  ✗  $id: downloaded content is not a PDF (arxiv returned an error page?)"
+      (( fail++ ))
+      continue
+    fi
+
+    command mv "$tmpfile" "$outfile"
+    size="$(command wc -c < "$outfile" | command awk '{print $1}')"
+    print -r -- "  ✓  $id → $outfile ($(( size / 1024 )) KB)"
+    (( ok++ ))
+  done
+
+  print ""
+  print -r -- "  done: ${ok} downloaded, ${skip} skipped, ${fail} failed"
+  (( fail == 0 ))
 }
 
 # ============================================================================
