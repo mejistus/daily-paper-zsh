@@ -64,6 +64,7 @@ the `plugins=(...)` line so the plugin sees them at load time.
 | `DAILY_PAPER_CACHE_DIR` | `~/.cache/daily-paper-zsh` | Where today's digest + last-shown date are stored. |
 | `DAILY_PAPER_DOWNLOAD_DIR` | `$HOME/Downloads` | Where `daily-paper download` saves PDFs. Created with `mkdir -p` if missing. |
 | `DAILY_PAPER_DOWNLOAD_TIMEOUT` | `60` | `curl` timeout per PDF download, in seconds. |
+| `DAILY_PAPER_PLUGIN_DIR` | auto-detected | Where the plugin lives on disk. Auto-detected from the path the plugin file was sourced from; override only if you've installed it somewhere exotic. |
 | `DAILY_PAPER_DISABLE` | unset | Set to `1` to disable the plugin entirely. |
 | `DAILY_PAPER_FORCE` | unset | Set to `1` to refetch even if already shown today (used by `daily-paper`). |
 | `DAILY_PAPER_DEBUG` | unset | Set to `1` to print verbose diagnostic info to stderr. |
@@ -91,6 +92,7 @@ list.
 | `daily-paper download <id> [...]` | Download one or more arXiv PDFs to `$DAILY_PAPER_DOWNLOAD_DIR` (default `$HOME/Downloads`). See below. |
 | `daily-paper cache` | Print the cache directory path and list its contents. |
 | `daily-paper clear` | Delete today's cached digest + last-shown marker (next shell refetches). |
+| `daily-paper update` | Pull the latest version of the plugin from its git origin (see below). |
 | `daily-paper help` | Print the subcommand list. |
 
 ### Downloading papers
@@ -114,6 +116,23 @@ If `<id>.pdf` already exists, it is skipped (delete the file to force a
 re-download). Partial downloads land in `<id>.pdf.partial` first and are
 renamed atomically on success — interrupted downloads never leave a
 half-written `.pdf` lying around.
+
+### Updating the plugin
+
+```sh
+daily-paper update
+```
+
+Runs `git fetch` followed by `git pull --ff-only` inside the plugin's
+install directory. The path is auto-detected from where the plugin file
+was sourced; override with `$DAILY_PAPER_PLUGIN_DIR` if you've installed
+it outside the standard `${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/`
+location.
+
+`--ff-only` is used so a stale local branch won't silently produce merge
+commits. The subcommand also surfaces local ahead/dirty state before
+pulling so you know when manual intervention is needed. Reload your
+shell (`exec zsh`) afterwards to pick up any code changes.
 
 ## How it works
 

@@ -26,12 +26,13 @@
 #
 # Manual commands:
 #
-#   daily-paper [search|download|cache|clear|help] [...]
+#   daily-paper [search|download|cache|clear|update|help] [...]
 #     (no args)        refetch today's digest
 #     search <kw>      one-off keyword search (prints inline)
 #     download <id>    download arXiv PDFs to $DAILY_PAPER_DOWNLOAD_DIR
 #     cache            show the cache directory and its contents
 #     clear            delete today's cache + state (next shell re-fetches)
+#     update           pull the latest version from the git origin
 #     help             list subcommands
 
 # ---- default values (only assigned when unset/empty) -----------------------
@@ -46,6 +47,10 @@
 : ${DAILY_PAPER_NO_COLOR:=}
 : ${DAILY_PAPER_DOWNLOAD_DIR:="$HOME/Downloads"}
 : ${DAILY_PAPER_DOWNLOAD_TIMEOUT:=60}
+# Auto-detect the plugin's install directory from the path this file was
+# sourced from (symlink-resolved). Override in .zshrc if you've installed it
+# somewhere exotic.
+: ${DAILY_PAPER_PLUGIN_DIR:=${${(%):-%x}:A:h}}
 
 # ============================================================================
 # Helpers
@@ -352,6 +357,7 @@ Subcommands:
                       (default: $HOME/Downloads).
   cache               Show the cache directory and its contents.
   clear               Delete today's cache + state (next shell refetches).
+  update              Pull the latest version of this plugin from its git origin.
   help                Show this message.
 EOF
 }
@@ -378,6 +384,9 @@ daily-paper() {
       ;;
     clear)
       shift; _daily_paper_zsh_clear "$@"
+      ;;
+    update)
+      shift; _daily_paper_zsh_update "$@"
       ;;
     *)
       print -ru2 -- "daily-paper-zsh: unknown subcommand '$1'"
@@ -430,6 +439,94 @@ _daily_paper_zsh_clear() {
   command rm -f "$DAILY_PAPER_CACHE_DIR/${today}.txt" \
                  "$DAILY_PAPER_CACHE_DIR/last_shown"
   print -r -- "daily-paper-zsh: cleared today's cache for $today"
+}
+
+# Pull the latest version of this plugin from its git origin.
+# Uses --ff-only so a stale local branch won't silently produce merge
+# commits; conflicts are surfaced for the user to resolve manually.
+_daily_paper_zsh_update() {
+  emulate -L zsh
+
+  if ! (( ${+commands[git]} )); then
+    print -ru2 -- "daily-paper-zsh: git not found"
+    return 1
+  fi
+
+  local plugin_dir="${DAILY_PAPER_PLUGIN_DIR:-${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/plugins/daily-paper-zsh}"
+
+  if [[ ! -d "$plugin_dir/.git" ]]; then
+    print -ru2 -- "daily-paper-zsh: '$plugin_dir' is not a git checkout"
+    print -ru2 -- "  set DAILY_PAPER_PLUGIN_DIR in your .zshrc, or install via 'git clone'"
+    return 1
+  fi
+
+  # Bail if there are no remotes at all (git fetch would no-op and report
+  # success, hiding the problem downstream).
+  local remote_count
+  remote_count="$(command git -C "$plugin_dir" remote 2>/dev/null | command wc -l | command tr -d ' ')"
+  if (( remote_count == 0 )); then
+    print -ru2 -- "daily-paper-zsh: no git remotes in '$plugin_dir' — nothing to update from"
+    print -ru2 -- "     add one with:  git -C \"$plugin_dir\" remote add origin <url>"
+    return 1
+  fi
+
+  print -r -- "  ↓  fetching in $plugin_dir ..."
+  command git -C "$plugin_dir" fetch 2>&1 | command sed 's/^/    /'
+  if (( ${pipestatus[1]} != 0 )); then
+    print -ru2 -- "  ✗  fetch failed"
+    return 1
+  fi
+
+  local branch
+  branch="$(command git -C "$plugin_dir" symbolic-ref --short HEAD 2>/dev/null)"
+  if [[ -z "$branch" ]]; then
+    print -r -- "  ⚠  detached HEAD — fetched only, not pulling"
+    return 0
+  fi
+
+  # No upstream ref for the current branch? We can fetch but not compare.
+  if ! command git -C "$plugin_dir" rev-parse --verify --quiet "origin/${branch}" &>/dev/null; then
+    print -r -- "  ⚠  no upstream 'origin/${branch}' — fetched only"
+    return 0
+  fi
+
+  # ahead/behind vs origin/<branch>; dirty = modified-file count.
+  local ahead behind dirty
+  ahead="$(command git -C "$plugin_dir" rev-list --count "origin/${branch}..HEAD"   2>/dev/null)"
+  behind="$(command git -C "$plugin_dir" rev-list --count "HEAD..origin/${branch}" 2>/dev/null)"
+  dirty="$(command git -C "$plugin_dir" status --porcelain 2>/dev/null | command wc -l | command tr -d ' ')"
+
+  if (( dirty > 0 )); then
+    print -r -- "  ⚠  working tree has $dirty modified file(s); pull may refuse or conflict"
+  fi
+  if (( ahead > 0 )); then
+    print -r -- "  ⚠  branch '$branch' is $ahead commit(s) ahead of origin (--ff-only will refuse)"
+  fi
+
+  if (( behind == 0 )); then
+    if (( ahead > 0 )); then
+      # already warned; ff-only would refuse, so skip the pull
+      return 0
+    fi
+    local cur
+    cur="$(command git -C "$plugin_dir" rev-parse --short HEAD 2>/dev/null)"
+    [[ -z "$cur" ]] && cur="?"
+    print -r -- "  ✓  already up to date (HEAD $cur on $branch)"
+    return 0
+  fi
+
+  print -r -- "  ↓  pulling --ff-only (behind: $behind) ..."
+  command git -C "$plugin_dir" pull --ff-only origin "${branch}" 2>&1 | command sed 's/^/    /'
+  if (( ${pipestatus[1]} != 0 )); then
+    print -ru2 -- "  ✗  pull failed — inspect with 'cd $plugin_dir && git status'"
+    return 1
+  fi
+
+  local new_head
+  new_head="$(command git -C "$plugin_dir" rev-parse --short HEAD 2>/dev/null)"
+  [[ -z "$new_head" ]] && new_head="?"
+  print -r -- "  ✓  now at $new_head ($branch)"
+  return 0
 }
 
 # Download one or more arXiv PDFs to $DAILY_PAPER_DOWNLOAD_DIR
