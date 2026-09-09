@@ -26,12 +26,13 @@
 #
 # Manual commands:
 #
-#   daily-paper                        refetch today's digest
-#   daily-paper-keyword <kw> [more...] one-off keyword search (prints inline)
-#   daily-paper-cache                  show the cache directory and its contents
-#   daily-paper-clear                  delete today's cache + state (next shell re-fetches)
-#   daily-paper download <id> [...]    download arXiv PDFs to $DAILY_PAPER_DOWNLOAD_DIR
-#                                      (accepts bare ids, versioned, prefixed, or URLs)
+#   daily-paper [search|download|cache|clear|help] [...]
+#     (no args)        refetch today's digest
+#     search <kw>      one-off keyword search (prints inline)
+#     download <id>    download arXiv PDFs to $DAILY_PAPER_DOWNLOAD_DIR
+#     cache            show the cache directory and its contents
+#     clear            delete today's cache + state (next shell re-fetches)
+#     help             list subcommands
 
 # ---- default values (only assigned when unset/empty) -----------------------
 : ${DAILY_PAPER_KEYWORDS:="diffusion,aigc detection,deepfake"}
@@ -213,7 +214,7 @@ _daily_paper_zsh_display() {
   done
 
   print -r -- "${cyan}${sep}${reset}"
-  print -r -- "${dim}  Tip: 'daily-paper' to refresh · 'daily-paper-keyword <kw>' for a one-off search${reset}"
+  print -r -- "${dim}  Tip: 'daily-paper' to refresh · 'daily-paper search <kw>' for a one-off search · 'daily-paper download <id>' for a PDF${reset}"
   print -r -- "${cyan}${sep}${reset}"
   print ""
 }
@@ -333,35 +334,64 @@ _daily_paper_zsh_run() {
 
 # ============================================================================
 # User-facing commands
+#
+# Everything goes through `daily-paper` as a dispatcher. The bare form
+# (no args) refetches today's digest; anything else routes to a
+# _daily_paper_zsh_<subcommand> implementation.
 # ============================================================================
 
-# Re-run the digest right now (refetch even if shown today).
-# Also dispatches subcommands when given arguments:
-#   daily-paper download <arxiv-id> [...]   (see daily-paper-download)
+_daily_paper_zsh_help() {
+  emulate -L zsh
+  cat <<'EOF'
+Usage: daily-paper [subcommand] [args...]
+
+Subcommands:
+  (none)              Refetch today's digest (ignores "already shown today").
+  search <kw> [...]   One-off keyword search; prints results inline.
+  download <id> [...] Download arXiv PDFs to $DAILY_PAPER_DOWNLOAD_DIR
+                      (default: $HOME/Downloads).
+  cache               Show the cache directory and its contents.
+  clear               Delete today's cache + state (next shell refetches).
+  help                Show this message.
+EOF
+}
+
 daily-paper() {
   emulate -L zsh
-  if (( $# >= 1 )); then
-    case "$1" in
-      download)
-        shift
-        daily-paper-download "$@"
-        return $?
-        ;;
-      *)
-        print -ru2 -- "daily-paper-zsh: unknown subcommand '$1'"
-        print -ru2 -- "  try: daily-paper download <arxiv-id> [...]"
-        return 1
-        ;;
-    esac
+  if (( $# == 0 )); then
+    DAILY_PAPER_FORCE=1 _daily_paper_zsh_run
+    return $?
   fi
-  DAILY_PAPER_FORCE=1 _daily_paper_zsh_run
+  case "$1" in
+    -h|--help|help)
+      _daily_paper_zsh_help
+      return 0
+      ;;
+    search)
+      shift; _daily_paper_zsh_search "$@"
+      ;;
+    download)
+      shift; _daily_paper_zsh_download "$@"
+      ;;
+    cache)
+      shift; _daily_paper_zsh_cache "$@"
+      ;;
+    clear)
+      shift; _daily_paper_zsh_clear "$@"
+      ;;
+    *)
+      print -ru2 -- "daily-paper-zsh: unknown subcommand '$1'"
+      _daily_paper_zsh_help >&2
+      return 1
+      ;;
+  esac
 }
 
 # Search one-off keyword(s) and print results inline (no caching, no state).
-daily-paper-keyword() {
+_daily_paper_zsh_search() {
   emulate -L zsh
   if (( $# < 1 )); then
-    print -ru2 -- "usage: daily-paper-keyword <keyword> [...]"
+    print -ru2 -- "usage: daily-paper search <keyword> [...]"
     return 1
   fi
   if ! (( ${+commands[curl]} )); then
@@ -382,7 +412,7 @@ daily-paper-keyword() {
 }
 
 # Show the cache directory and its contents.
-daily-paper-cache() {
+_daily_paper_zsh_cache() {
   emulate -L zsh
   print -r -- "$DAILY_PAPER_CACHE_DIR"
   if [[ -d "$DAILY_PAPER_CACHE_DIR" ]]; then
@@ -393,7 +423,7 @@ daily-paper-cache() {
 }
 
 # Delete today's cache + state so the next shell refetches.
-daily-paper-clear() {
+_daily_paper_zsh_clear() {
   emulate -L zsh
   local today
   today="$(_daily_paper_zsh_today)"
@@ -409,7 +439,7 @@ daily-paper-clear() {
 # Files are written as <id>.pdf. If <id>.pdf already exists it is skipped
 # (delete it to force a re-download). Downloads land in <id>.pdf.partial
 # first; on success they are renamed atomically.
-daily-paper-download() {
+_daily_paper_zsh_download() {
   emulate -L zsh
   if (( $# < 1 )); then
     print -ru2 -- "usage: daily-paper download <arxiv-id> [...]"

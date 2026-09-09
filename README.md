@@ -29,7 +29,7 @@ Default keywords:
   …
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  Tip: 'daily-paper' to refresh · 'daily-paper-keyword <kw>' for a one-off search
+  Tip: 'daily-paper' to refresh · 'daily-paper search <kw>' for a one-off search · 'daily-paper download <id>' for a PDF
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
@@ -80,15 +80,18 @@ export DAILY_PAPER_OPEN=1
 
 ## Commands
 
-The plugin exposes five user-facing commands:
+Everything goes through a single `daily-paper` command with subcommands.
+Run `daily-paper help` (or `daily-paper --help`) at any time to see this
+list.
 
-| Command | What it does |
+| Subcommand | What it does |
 |---|---|
-| `daily-paper` | Refetch today's digest right now (ignores "already shown today"). |
-| `daily-paper-keyword <kw> [more...]` | One-off keyword search; prints results inline without touching state or cache. |
-| `daily-paper-cache` | Print the cache directory path and list its contents. |
-| `daily-paper-clear` | Delete today's cached digest + last-shown marker (next shell refetches). |
+| `daily-paper` (no args) | Refetch today's digest right now (ignores "already shown today"). |
+| `daily-paper search <kw> [...]` | One-off keyword search; prints results inline without touching state or cache. |
 | `daily-paper download <id> [...]` | Download one or more arXiv PDFs to `$DAILY_PAPER_DOWNLOAD_DIR` (default `$HOME/Downloads`). See below. |
+| `daily-paper cache` | Print the cache directory path and list its contents. |
+| `daily-paper clear` | Delete today's cached digest + last-shown marker (next shell refetches). |
+| `daily-paper help` | Print the subcommand list. |
 
 ### Downloading papers
 
