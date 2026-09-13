@@ -95,13 +95,48 @@ _daily_paper_zsh_fetch_keyword() {
 
   _daily_paper_zsh_log "GET $url"
 
-  local response
-  if ! response="$(command curl -sSL -m "$DAILY_PAPER_TIMEOUT" "$url" 2>/dev/null)"; then
-    print -ru2 -- "daily-paper-zsh: curl failed for keyword '$keyword'"
+  # Write body to one tmp file, capture status code via curl's --write-out
+  # to another. This lets us distinguish a transport-level failure (curl
+  # exits non-zero) from an HTTP-level one (curl exits 0 but got a 429/5xx
+  # response with an error page in the body).
+  local body_file code_file http_code response
+  body_file="$(command mktemp 2>/dev/null || command touch /dev/null)"
+  code_file="$(command mktemp 2>/dev/null || command touch /dev/null)"
+  command curl -sSL -m "$DAILY_PAPER_TIMEOUT" \
+                -o "$body_file" -w '%{http_code}' \
+                "$url" > "$code_file" 2>/dev/null
+  local curl_status=$?
+  http_code="$(command cat "$code_file" 2>/dev/null)"
+  command rm -f "$code_file"
+
+  if (( curl_status != 0 )); then
+    command rm -f "$body_file"
+    print -ru2 -- "daily-paper-zsh: curl failed for keyword '$keyword' (network issue or arxiv down?)"
     return 1
   fi
 
-  [[ -z "$response" ]] && return 1
+  case "$http_code" in
+    2*) ;;   # success; fall through to parse body below
+    429)
+      command rm -f "$body_file"
+      print -ru2 -- "daily-paper-zsh: arxiv returned HTTP 429 (rate limited) for keyword '$keyword'"
+      print -ru2 -- "     arxiv rate-limits per-IP — wait a minute and retry"
+      return 1
+      ;;
+    5*)
+      command rm -f "$body_file"
+      print -ru2 -- "daily-paper-zsh: arxiv returned HTTP $http_code for keyword '$keyword' (server error — try again later)"
+      return 1
+      ;;
+    *)
+      command rm -f "$body_file"
+      print -ru2 -- "daily-paper-zsh: arxiv returned HTTP $http_code for keyword '$keyword'"
+      return 1
+      ;;
+  esac
+
+  response="$(command cat "$body_file" 2>/dev/null)"
+  command rm -f "$body_file"
 
   # Decode the five standard XML entities, then parse entries with awk.
   # awk handles <title> blocks that span multiple lines (arxiv wraps long
