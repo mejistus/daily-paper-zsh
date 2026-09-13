@@ -11,7 +11,7 @@
 #   DAILY_PAPER_KEYWORDS        comma-separated keywords
 #                               default: "diffusion,aigc detection,deepfake"
 #   DAILY_PAPER_MAX_RESULTS     papers per keyword       default: 5
-#   DAILY_PAPER_TIMEOUT         curl timeout in seconds  default: 20
+#   DAILY_PAPER_TIMEOUT         curl timeout in seconds  default: 30
 #   DAILY_PAPER_CACHE_DIR       override cache dir       default: ~/.cache/daily-paper-zsh
 #   DAILY_PAPER_DOWNLOAD_DIR    where 'download' saves PDFs
 #                               default: $HOME/Downloads
@@ -37,7 +37,7 @@
 # ---- default values (only assigned when unset/empty) -----------------------
 : ${DAILY_PAPER_KEYWORDS:="diffusion,aigc detection,deepfake"}
 : ${DAILY_PAPER_MAX_RESULTS:=5}
-: ${DAILY_PAPER_TIMEOUT:=20}
+: ${DAILY_PAPER_TIMEOUT:=30}
 : ${DAILY_PAPER_CACHE_DIR:="${XDG_CACHE_HOME:-$HOME/.cache}/daily-paper-zsh"}
 : ${DAILY_PAPER_FORCE:=}
 : ${DAILY_PAPER_DEBUG:=}
@@ -84,27 +84,35 @@ _daily_paper_zsh_mark_shown() {
 # Fetch papers for a single keyword. Writes 3 lines per paper to stdout:
 #   line 1: keyword
 #   line 2: title
-#   line 3: arxiv URL (http://arxiv.org/abs/...)
+#   line 3: arxiv URL (https://arxiv.org/abs/...)
+#
+# Hits the human-facing arxiv search page (arxiv.org/search/) rather than
+# export.arxiv.org/api/query. The API aggressively rate-limits per IP
+# (~1 req/3s) and serves HTTP 429 even for light personal use; the search
+# page is the same data, same freshness, no rate limiting, and the HTML
+# is straightforward to parse for the fields we need (id + title).
 _daily_paper_zsh_fetch_keyword() {
   emulate -L zsh
   local keyword="$1"
   local max_results="$2"
-  # arxiv search_query supports AND/OR/ANDNOT; quote multi-word keywords.
-  local query="${keyword// /+}"
-  local url="https://export.arxiv.org/api/query?search_query=all:${query}&max_results=${max_results}&sortBy=submittedDate&sortOrder=descending"
 
-  _daily_paper_zsh_log "GET $url"
+  _daily_paper_zsh_log "search arxiv.org for '$keyword' (max $max_results)"
 
   # Write body to one tmp file, capture status code via curl's --write-out
   # to another. This lets us distinguish a transport-level failure (curl
-  # exits non-zero) from an HTTP-level one (curl exits 0 but got a 429/5xx
+  # exits non-zero) from an HTTP-level one (curl exits 0 but got a 5xx
   # response with an error page in the body).
-  local body_file code_file http_code response
+  local body_file code_file http_code
   body_file="$(command mktemp 2>/dev/null || command touch /dev/null)"
   code_file="$(command mktemp 2>/dev/null || command touch /dev/null)"
   command curl -sSL -m "$DAILY_PAPER_TIMEOUT" \
+                --get "https://arxiv.org/search/" \
+                --data-urlencode "searchtype=all" \
+                --data-urlencode "query=${keyword}" \
+                --data-urlencode "order=-announced_date_first" \
+                --data-urlencode "start=0" \
                 -o "$body_file" -w '%{http_code}' \
-                "$url" > "$code_file" 2>/dev/null
+                > "$code_file" 2>/dev/null
   local curl_status=$?
   http_code="$(command cat "$code_file" 2>/dev/null)"
   command rm -f "$code_file"
@@ -117,12 +125,6 @@ _daily_paper_zsh_fetch_keyword() {
 
   case "$http_code" in
     2*) ;;   # success; fall through to parse body below
-    429)
-      command rm -f "$body_file"
-      print -ru2 -- "daily-paper-zsh: arxiv returned HTTP 429 (rate limited) for keyword '$keyword'"
-      print -ru2 -- "     arxiv rate-limits per-IP — wait a minute and retry"
-      return 1
-      ;;
     5*)
       command rm -f "$body_file"
       print -ru2 -- "daily-paper-zsh: arxiv returned HTTP $http_code for keyword '$keyword' (server error — try again later)"
@@ -135,62 +137,77 @@ _daily_paper_zsh_fetch_keyword() {
       ;;
   esac
 
-  response="$(command cat "$body_file" 2>/dev/null)"
-  command rm -f "$body_file"
-
-  # Decode the five standard XML entities, then parse entries with awk.
-  # awk handles <title> blocks that span multiple lines (arxiv wraps long
-  # titles), and skips the feed-level <title> by only matching inside <entry>.
-  print -r -- "$response" \
-    | command sed -e 's/&amp;/\&/g' \
-                  -e 's/&lt;/</g' \
-                  -e 's/&gt;/>/g' \
-                  -e 's/&quot;/"/g' \
-                  -e "s/&apos;/'/g" \
-    | command awk -v kw="$keyword" '
-        /<entry>/      { in_entry=1; title=""; id=""; in_title=0; next }
-        /<\/entry>/    {
-          if (in_entry && title != "" && id != "") {
-            gsub(/^[[:space:]]+|[[:space:]]+$/, "", title)
-            gsub(/[[:space:]]+/, " ", title)
-            print kw
-            print title
-            print id
-          }
-          in_entry=0; next
+  # The search page is one big HTML document. Walk it line-by-line with a
+  # state machine: toggle in_result on <li class="arxiv-result"> /
+  # </li>, and inside each block capture the /abs/ link (id) and the
+  # <p class="title ...">...</p> body (title). After awk runs, a sed
+  # pass strips remaining HTML tags (e.g. arxiv's <span class="search-hit">
+  # keyword-highlight markup inside titles).
+  command awk -v kw="$keyword" -v max="$max_results" '
+    BEGIN { n = 0 }
+    /<li class="arxiv-result">/ { in_result = 1; id = ""; title = ""; in_title = 0; next }
+    in_result && /<\/li>/ {
+      if (id != "" && title != "" && !(id in seen)) {
+        seen[id] = 1
+        print kw
+        print title
+        print id
+        n++
+        if (n >= max) exit
+      }
+      in_result = 0
+      next
+    }
+    in_result {
+      # arxiv id: any <a href=".../abs/XXXX.XXXXX[vN]"> tag
+      if (id == "" && match($0, /href="[^"]*\/abs\/[0-9]{4}\.[0-9]{4,5}(v[0-9]+)?/)) {
+        s = $0; sub(/.*href="[^"]*\/abs\//, "", s); sub(/["? ].*/, "", s)
+        id = "https://arxiv.org/abs/" s
+      }
+      # Title opener: <p class="title ..."> — start accumulating
+      if (in_title == 0 && title == "" && match($0, /<p class="title[^>]*>/)) {
+        s = $0; sub(/.*<p class="title[^>]*>/, "", s)
+        title = s
+        in_title = 1
+        next
+      }
+      # Title body / closer
+      if (in_title == 1) {
+        if (match($0, /<\/p>/)) {
+          s = $0; sub(/<\/p>.*/, "", s)
+          title = title " " s
+          in_title = 0
+        } else if ($0 ~ /[^[:space:]]/) {
+          title = title " " $0
         }
-        in_entry {
-          if (in_title) {
-            if (match($0, /<\/title>/)) {
-              t = $0; sub(/<\/title>.*/, "", t)
-              title = title " " t
-              gsub(/[[:space:]]+/, " ", title)
-              in_title = 0
-            } else {
-              title = title " " $0
-            }
-            next
-          }
-          if (match($0, /<title>/)) {
-            t = $0; sub(/.*<title>/, "", t)
-            if (match(t, /<\/title>/)) {
-              sub(/<\/title>.*/, "", t)
-              title = t
-              gsub(/[[:space:]]+/, " ", title)
-            } else {
-              title = t
-              in_title = 1
-            }
-            next
-          }
-          if (match($0, /<id>/) && id == "") {
-            t = $0; sub(/.*<id>/, "", t); sub(/<\/id>.*/, "", t)
-            id = t
-            next
+      }
+    }
+  ' "$body_file" \
+    | command sed -e 's/<[^>]*>//g' \
+                  -e 's/&/\&/g' \
+                  -e 's/</</g' \
+                  -e 's/>/>/g' \
+                  -e 's/"/"/g' \
+                  -e "s/'/'/g" \
+                  -e 's/&ndash;/-/g' \
+                  -e 's/&hellip;/.../g' \
+    | command awk '
+        { lines[NR] = $0 }
+        END {
+          for (i = 1; i <= NR; i++) {
+            line = lines[i]
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+            gsub(/[[:space:]]+/, " ", line)
+            print line
           }
         }
       '
+
+  command rm -f "$body_file"
 }
+
+
+
 
 # Pretty-print a 3-lines-per-paper blob.
 # $1: data blob, one paper per 3 lines (keyword, title, url)

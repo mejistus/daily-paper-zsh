@@ -147,11 +147,16 @@ precmd() { (( _DAILY_PAPER_DID_AUTORUN )) || { _DAILY_PAPER_DID_AUTORUN=1; daily
    does nothing else — no network, no file I/O, nothing.
 2. When you run `daily-paper`, it reads `$DAILY_PAPER_CACHE_DIR/last_shown`.
    If the date there matches today, the call short-circuits silently.
-3. Otherwise it fires one `curl` request per keyword to
-   `https://export.arxiv.org/api/query`, parses the Atom XML response
-   with `awk`, deduplicates by arXiv ID, caches the result to
-   `$DAILY_PAPER_CACHE_DIR/YYYY-MM-DD.txt`, and prints it.
+3. Otherwise it fires one `curl` request per keyword to arxiv's search
+   page (`https://arxiv.org/search/?query=...&order=-announced_date_first`),
+   parses the HTML for arXiv IDs and titles, deduplicates, caches the
+   result to `$DAILY_PAPER_CACHE_DIR/YYYY-MM-DD.txt`, and prints it.
 4. If arXiv is unreachable, no state is written — the next call retries
+
+The search page is used (instead of `export.arxiv.org/api/query`) because
+the API aggressively rate-limits per IP and serves `HTTP 429 Rate
+exceeded` even for light personal use. The HTML search page returns the
+same data with no rate limiting.
    fresh.
 
 ## Requirements
