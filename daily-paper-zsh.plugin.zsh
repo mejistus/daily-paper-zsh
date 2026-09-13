@@ -105,12 +105,16 @@ _daily_paper_zsh_fetch_keyword() {
   local body_file code_file http_code
   body_file="$(command mktemp 2>/dev/null || command touch /dev/null)"
   code_file="$(command mktemp 2>/dev/null || command touch /dev/null)"
+  # size=25 is the smallest page arxiv's search supports. The full default
+  # of 50 doubles transfer size (~250KB) and triples wall-clock time, with
+  # no benefit since we only consume max_results entries from the top.
   command curl -sSL -m "$DAILY_PAPER_TIMEOUT" \
                 --get "https://arxiv.org/search/" \
                 --data-urlencode "searchtype=all" \
                 --data-urlencode "query=${keyword}" \
                 --data-urlencode "order=-announced_date_first" \
                 --data-urlencode "start=0" \
+                --data-urlencode "size=25" \
                 -o "$body_file" -w '%{http_code}' \
                 > "$code_file" 2>/dev/null
   local curl_status=$?
@@ -356,9 +360,37 @@ _daily_paper_zsh_run() {
   local -a keywords
   keywords=( "${(@s:,:)DAILY_PAPER_KEYWORDS}" )
 
-  local all_data="" first_url="" any_paper=0 out
+  # Fetch all keywords concurrently. Each subshell writes its 3-lines-per-
+  # paper blob to a per-keyword tmpfile; we then concatenate in the original
+  # keyword order so display() groups them correctly. Parallel curl is the
+  # biggest win — the search endpoint takes ~5s per query at size=25, so
+  # 3 keywords drop from ~15s serial to ~5s wall-clock.
+  local -a tmpfiles pids
+  tmpfiles=()
+  pids=()
+  local kw i workdir
+  workdir="$(command mktemp -d 2>/dev/null || command mkdir -p /tmp/daily-paper-zsh.$$)"
   for kw in "${keywords[@]}"; do
-    out="$(_daily_paper_zsh_fetch_keyword "$kw" "$DAILY_PAPER_MAX_RESULTS")"
+    tmpfiles+=("$workdir/kw.$$.${#tmpfiles[@]}.out")
+  done
+
+  # zsh note: ${!arr[@]} requires an associative array. For indexed arrays
+  # iterate by integer index.
+  for (( i = 1; i <= ${#tmpfiles[@]}; i++ )); do
+    kw="${keywords[$i]}"
+    # Background fetch; capture output via the per-keyword tmpfile.
+    ( _daily_paper_zsh_fetch_keyword "$kw" "$DAILY_PAPER_MAX_RESULTS" > "${tmpfiles[$i]}" 2>/dev/null ) &
+    pids+=($!)
+  done
+  # Wait for all fetches; tolerate failures from individual keywords.
+  for pid in "${pids[@]}"; do
+    wait "$pid" 2>/dev/null
+  done
+
+  local all_data="" first_url="" any_paper=0 out tmpfile
+  for tmpfile in "${tmpfiles[@]}"; do
+    out="$(command cat "$tmpfile" 2>/dev/null)"
+    command rm -f "$tmpfile"
     if [[ -n "$out" ]]; then
       # remember the first URL we see across all keywords
       if (( any_paper == 0 )); then
@@ -368,6 +400,7 @@ _daily_paper_zsh_run() {
       all_data+="${out}"$'\n'
     fi
   done
+  command rmdir "$workdir" 2>/dev/null
 
   if [[ -z "$all_data" ]]; then
     print -ru2 -- "daily-paper-zsh: no papers fetched (network issue or arxiv down?)"

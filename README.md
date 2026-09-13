@@ -59,7 +59,7 @@ the `plugins=(...)` line so the plugin sees them at load time.
 |---|---|---|
 | `DAILY_PAPER_KEYWORDS` | `"diffusion,aigc detection,deepfake"` | Comma-separated keywords. Multi-word keywords are quoted by the plugin automatically. |
 | `DAILY_PAPER_MAX_RESULTS` | `5` | How many papers per keyword to fetch. |
-| `DAILY_PAPER_TIMEOUT` | `20` | Per-request `curl` timeout in seconds. |
+| `DAILY_PAPER_TIMEOUT` | `30` | Per-request `curl` timeout in seconds. |
 | `DAILY_PAPER_CACHE_DIR` | `~/.cache/daily-paper-zsh` | Where today's digest + last-shown date are stored. |
 | `DAILY_PAPER_DOWNLOAD_DIR` | `$HOME/Downloads` | Where `daily-paper download` saves PDFs. Created with `mkdir -p` if missing. |
 | `DAILY_PAPER_DOWNLOAD_TIMEOUT` | `60` | `curl` timeout per PDF download, in seconds. |
@@ -147,17 +147,22 @@ precmd() { (( _DAILY_PAPER_DID_AUTORUN )) || { _DAILY_PAPER_DID_AUTORUN=1; daily
    does nothing else — no network, no file I/O, nothing.
 2. When you run `daily-paper`, it reads `$DAILY_PAPER_CACHE_DIR/last_shown`.
    If the date there matches today, the call short-circuits silently.
-3. Otherwise it fires one `curl` request per keyword to arxiv's search
-   page (`https://arxiv.org/search/?query=...&order=-announced_date_first`),
-   parses the HTML for arXiv IDs and titles, deduplicates, caches the
-   result to `$DAILY_PAPER_CACHE_DIR/YYYY-MM-DD.txt`, and prints it.
+3. Otherwise it fires one `curl` request per keyword — concurrently —
+   to arxiv's search page
+   (`https://arxiv.org/search/?query=...&order=-announced_date_first&size=25`).
+   Each response is parsed for arXiv IDs and titles, results are
+   concatenated in keyword order, deduplicated, cached to
+   `$DAILY_PAPER_CACHE_DIR/YYYY-MM-DD.txt`, and printed.
 4. If arXiv is unreachable, no state is written — the next call retries
+   fresh.
 
 The search page is used (instead of `export.arxiv.org/api/query`) because
 the API aggressively rate-limits per IP and serves `HTTP 429 Rate
 exceeded` even for light personal use. The HTML search page returns the
-same data with no rate limiting.
-   fresh.
+same data with no rate limiting. `size=25` is the smallest page arxiv
+allows (default 50 doubles transfer size with no benefit since we only
+read the top `DAILY_PAPER_MAX_RESULTS` entries); concurrent fetches keep
+wall-clock time close to a single request rather than N×per-request.
 
 ## Requirements
 
