@@ -3,7 +3,7 @@
 *.swp
 *.swo
 *~
-
+.opencode/
 # Test artifacts
 /tmp/
 .cache/
