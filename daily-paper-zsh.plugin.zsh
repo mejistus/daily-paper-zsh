@@ -1,11 +1,10 @@
 # daily-paper-zsh.plugin.zsh
 #
-# Daily arXiv paper digest for oh-my-zsh.
+# Manual arXiv paper digest for oh-my-zsh.
 #
-# On the first interactive shell of each day, fetches the latest arXiv
-# papers matching the configured keywords (default: "diffusion",
-# "aigc detection", "deepfake") and prints the title + URL of each one.
-# Subsequent shells that day print the cached result silently.
+# This plugin is fully manual — nothing runs on shell startup. Run
+# `daily-paper` whenever you want to see today's digest. The plugin
+# does no I/O at load time, so shell startup stays instant.
 #
 # Configuration (set in ~/.zshrc BEFORE the plugins=(...) line):
 #
@@ -17,21 +16,21 @@
 #   DAILY_PAPER_DOWNLOAD_DIR    where 'download' saves PDFs
 #                               default: $HOME/Downloads
 #   DAILY_PAPER_DOWNLOAD_TIMEOUT curl timeout per PDF    default: 60
+#   DAILY_PAPER_PLUGIN_DIR      override plugin dir (auto-detected otherwise)
 #
-#   DAILY_PAPER_DISABLE         set to 1 to disable the plugin
 #   DAILY_PAPER_FORCE           set to 1 to refetch even if already shown today
 #   DAILY_PAPER_DEBUG           set to 1 for verbose diagnostic output to stderr
 #   DAILY_PAPER_OPEN            set to 1 to open the first paper in your browser
 #   DAILY_PAPER_NO_COLOR        set to 1 to disable ANSI colors
 #
-# Manual commands:
+# Commands:
 #
 #   daily-paper [search|download|cache|clear|update|help] [...]
-#     (no args)        refetch today's digest
+#     (no args)        fetch and print today's digest
 #     search <kw>      one-off keyword search (prints inline)
 #     download <id>    download arXiv PDFs to $DAILY_PAPER_DOWNLOAD_DIR
 #     cache            show the cache directory and its contents
-#     clear            delete today's cache + state (next shell re-fetches)
+#     clear            delete today's cache + state (next call refetches)
 #     update           pull the latest version from the git origin
 #     help             list subcommands
 
@@ -40,7 +39,6 @@
 : ${DAILY_PAPER_MAX_RESULTS:=5}
 : ${DAILY_PAPER_TIMEOUT:=20}
 : ${DAILY_PAPER_CACHE_DIR:="${XDG_CACHE_HOME:-$HOME/.cache}/daily-paper-zsh"}
-: ${DAILY_PAPER_DISABLE:=}
 : ${DAILY_PAPER_FORCE:=}
 : ${DAILY_PAPER_DEBUG:=}
 : ${DAILY_PAPER_OPEN:=}
@@ -297,7 +295,7 @@ _daily_paper_zsh_run() {
   fi
 
   if ! (( ${+commands[curl]} )); then
-    print -ru2 -- "daily-paper-zsh: curl not found — install curl or set DAILY_PAPER_DISABLE=1"
+    print -ru2 -- "daily-paper-zsh: curl not found — install curl to use this command"
     return 1
   fi
 
@@ -611,16 +609,18 @@ _daily_paper_zsh_download() {
 }
 
 # ============================================================================
-# Auto-run on plugin load
+# No auto-run on plugin load.
 #
-# Only the first interactive shell of the day shows output:
-#   - [[ -o interactive ]] guards against non-interactive shells (scripts,
-#     CI, `zsh -c '...'`).
-#   - [[ -t 1 ]] guards against redirected/piped output.
-#   - DAILY_PAPER_DISABLE short-circuits.
-# Subsequent shells that day see state already updated and return silently.
+# Earlier versions fetched + printed today's digest every time the first
+# interactive shell of the day opened, which made startup depend on
+# network latency and arxiv's API. To keep shell startup instant and
+# deterministic, this plugin is now fully manual — run `daily-paper`
+# when you want to see the digest. Subsequent invocations on the same
+# day short-circuit from the cached `last_shown` state, so re-running
+# the command is cheap.
+#
+# If you really want the old auto-run behavior, you can put this in
+# your .zshrc after the plugins=(...) line:
+#
+#   precmd() { (( _DAILY_PAPER_DID_AUTORUN )) || { _DAILY_PAPER_DID_AUTORUN=1; daily-paper; } }
 # ============================================================================
-
-if [[ -o interactive ]] && [[ -t 1 ]] && [[ -z "$DAILY_PAPER_DISABLE" ]]; then
-  _daily_paper_zsh_run
-fi
